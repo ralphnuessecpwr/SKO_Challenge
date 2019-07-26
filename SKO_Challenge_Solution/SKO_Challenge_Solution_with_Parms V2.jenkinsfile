@@ -1,0 +1,159 @@
+String hciConnectionId      = '91bae501-8b4d-4155-909d-2ad5aa9f3131'
+String hostCredentialsToken = 'ea48408b-b2be-4810-8f4e-5b5f35977eb1'
+
+String gitRepo              = 'https://github.com/ralphnuessecpwr'
+
+/*
+String ispwStream           = 'FTSDEMO'
+String ispwApplication      = 'RXN3'
+String ispwContainerName    = 'RXN3000020'
+String ispwLevel            = 'DEV1'
+*/
+
+String gitUnitTestProject   = ispwStream + '_' + ispwApplication + '_Unit_Tests'
+String gitTttUrl            = gitRepo + '/' + gitUnitTestProject
+
+String pathNum              = ispwLevel.substring(ispwLevel.length() - 1)
+String tttRunnerJcl         = "Runner_PATH${pathNum}.jcl"
+
+String ccRepository         = 'HDDRXM0.DEMO.COCO.REPOS'
+String ccSystem             = 'SKO_DEMO'
+String ccTestId             = "BUILD_${BUILD_NUMBER}"
+
+node
+{
+    stage("Get Sources from ISPW")
+    {
+        checkout changelog: false, 
+            poll: false, 
+            scm: [$class: 'IspwContainerConfiguration', 
+                componentType: 'COB', 
+                connectionId: hciConnectionId, 
+                containerName: "${ispwContainerName}", 
+                containerType: '0', 
+                credentialsId: hostCredentialsToken, 
+                ispwDownloadAll: false, 
+                serverConfig: 'ispw', 
+                serverLevel: ispwLevel]
+    }
+    
+    stage("Get Unit Tests")
+    {
+        checkout changelog: false, 
+            poll: false, 
+            scm: [$class: 'GitSCM', 
+                branches: [[name: '*/master']], 
+                doGenerateSubmoduleConfigurations: false, 
+                extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'tests']], 
+                submoduleCfg: [], 
+                userRemoteConfigs: [[url: gitTttUrl]]]
+    }
+    
+    stage("Execute Scenarios")
+    {
+        step([$class: 'TotalTestBuilder', 
+            ccRepo: ccRepository, 
+            ccSystem: ccSystem, 
+            ccTestId: ccTestId, 
+            ccClearStats: false,
+            connectionId: hciConnectionId, 
+            credentialsId: hostCredentialsToken, 
+            hlq: '', 
+            jcl: tttRunnerJcl, 
+            projectFolder: 'tests/CWXTSUBC_Unit_Tests', 
+            testSuite: 'CWXTSUBC_Mgmt_Scenario.testscenario'])
+        
+        step([$class: 'TotalTestBuilder', 
+            ccRepo: ccRepository, 
+            ccSystem: ccSystem, 
+            ccTestId: ccTestId, 
+            ccClearStats: false,
+            connectionId: hciConnectionId, 
+            credentialsId: hostCredentialsToken, 
+            hlq: '', 
+            jcl: tttRunnerJcl, 
+            projectFolder: 'tests/CWXTSUBC_Unit_Tests', 
+            testSuite: 'CWXTSUBC_Sales_Scenario.testscenario'])
+
+        step([$class: 'TotalTestBuilder', 
+            ccRepo: ccRepository, 
+            ccSystem: ccSystem, 
+            ccTestId: ccTestId, 
+            ccClearStats: false,
+            connectionId: hciConnectionId, 
+            credentialsId: hostCredentialsToken, 
+            hlq: '', 
+            jcl: tttRunnerJcl, 
+            projectFolder: 'tests/CWXTCOB_Unit_Tests', 
+          testSuite: 'CWXTCOB_Scenario.testscenario'])        
+    }
+
+    stage("Download Code Coverage")
+    {
+        step([$class: 'CodeCoverageBuilder', 
+            analysisProperties: """cc.sources=RXN3/MF_Source
+            cc.repos=${ccRepository}
+            cc.system=${ccSystem}
+            cc.test=${ccTestId}
+            cc.ddio.overrides=""", 
+            analysisPropertiesPath: '', 
+            connectionId: hciConnectionId, 
+            credentialsId: hostCredentialsToken])
+    }
+
+    /*
+    stage("Download Code Coverage")
+    {
+        step([$class: 'CodeCoverageBuilder', 
+            analysisProperties: '''cc.sources=RXN3/MF_Source
+            cc.repos=HDDRXM0.DEMO.COCO.REPOS
+            cc.system=SKO_DEMO
+            cc.test=TEST
+            cc.ddio.overrides=''', 
+            analysisPropertiesPath: '', 
+            connectionId: hciConnectionId, 
+            credentialsId: hostCredentialsToken])
+    }
+    */
+    
+    stage("Pass to Sonar")
+    {
+        def scannerHome = tool "scanner";
+
+        withSonarQubeEnv("localhost")       // 'localhost' is the name of the SonarQube server defined in Jenkins / Configure Systems / SonarQube server section
+        {
+            def SQ_TestResult          = "-Dsonar.testExecutionReportPaths=TTTSonar/CWXTSUBC_Mgmt_Scenario.xml,TTTSonar/CWXTSUBC_Sales_Scenario.xml,TTTSonar/CWXTCOB_Scenario.xml"    
+
+            // Test and Coverage results
+            def SQ_Scanner_Properties   = " -Dsonar.tests=tests ${SQ_TestResult} -Dsonar.coverageReportPaths=Coverage/CodeCoverage.xml"
+            // SonarQube project to load results into
+            SQ_Scanner_Properties = SQ_Scanner_Properties + " -Dsonar.projectKey=${JOB_NAME} -Dsonar.projectName=${JOB_NAME} -Dsonar.projectVersion=1.0"
+            // Location of the Cobol Source Code to scan
+            SQ_Scanner_Properties = SQ_Scanner_Properties + " -Dsonar.sources=RXN3\\MF_Source"
+            // Location of the Cobol copybooks to scan
+            SQ_Scanner_Properties = SQ_Scanner_Properties + " -Dsonar.cobol.copy.directories=RXN3\\MF_Source"  
+            // File extensions for Cobol and Copybook files.  The Total Test files need that contain tests need to be defined as cobol for SonarQube to process the results
+            SQ_Scanner_Properties = SQ_Scanner_Properties + " -Dsonar.cobol.file.suffixes=cbl,testsuite,testscenario,stub -Dsonar.cobol.copy.suffixes=cpy -Dsonar.sourceEncoding=UTF-8"
+            
+            // Call the SonarQube Scanner with properties defined above
+            bat "${scannerHome}/bin/sonar-scanner" + SQ_Scanner_Properties
+        }    
+    }
+    
+    stage("Check Quality Gate")
+    {
+        timeout(time: 1, unit: 'MINUTES')
+        {
+            qualityGate = waitForQualityGate()
+
+            if (qualityGate.status == 'OK')
+            {
+                emailext body: '', subject: 'Job Passed', to: 'ralph.nuesse@compuware.com'
+            }
+            else 
+            {
+                emailext body: '', subject: 'Job Failed', to: 'ralph.nuesse@compuware.com'
+            }
+        }
+    }
+}

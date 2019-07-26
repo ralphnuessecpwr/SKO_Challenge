@@ -1,5 +1,10 @@
 node
 {
+    dir(".\\") 
+    {
+        deleteDir()
+    }
+
     stage("Get Sources from ISPW")
     {
         checkout changelog: false, 

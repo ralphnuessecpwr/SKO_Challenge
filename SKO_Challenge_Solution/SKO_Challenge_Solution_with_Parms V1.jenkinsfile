@@ -19,6 +19,11 @@ String ccTestId             = "BUILD_${BUILD_NUMBER}"
 
 node
 {
+    dir(".\\") 
+    {
+        deleteDir()
+    }
+
     stage("Get Sources from ISPW")
     {
         checkout changelog: false, 
